@@ -1,5 +1,5 @@
 ;;- Machine description for HP PA-RISC architecture for GCC compiler
-;;   Copyright (C) 1992-2014 Free Software Foundation, Inc.
+;;   Copyright (C) 1992-2015 Free Software Foundation, Inc.
 ;;   Contributed by the Center for Software Science at the University
 ;;   of Utah.
 
@@ -181,19 +181,13 @@
 		(const_string "true")
 		(const_string "false")))
 
-;; For calls and millicode calls.  Allow unconditional branches in the
-;; delay slot.
+;; For calls and millicode calls.
 (define_attr "in_call_delay" "false,true"
-  (cond [(and (eq_attr "type" "!uncond_branch,branch,cbranch,fbranch,call,sibcall,dyncall,multi,milli,sh_func_adrs,parallel_branch,trap")
-	      (eq_attr "length" "4")
-	      (not (match_test "RTX_FRAME_RELATED_P (insn)")))
-	   (const_string "true")
-	 (eq_attr "type" "uncond_branch")
-	   (if_then_else (match_test "TARGET_JUMP_IN_DELAY")
-			 (const_string "true")
-			 (const_string "false"))]
-	(const_string "false")))
-
+  (if_then_else (and (eq_attr "type" "!uncond_branch,branch,cbranch,fbranch,call,sibcall,dyncall,multi,milli,sh_func_adrs,parallel_branch,trap")
+		     (eq_attr "length" "4")
+		     (not (match_test "RTX_FRAME_RELATED_P (insn)")))
+		(const_string "true")
+		(const_string "false")))
 
 ;; Call delay slot description.
 (define_delay (eq_attr "type" "call")
@@ -229,8 +223,7 @@
    (and (eq_attr "in_nullified_branch_delay" "true")
 	(attr_flag "backward"))])
 
-(define_delay (and (eq_attr "type" "uncond_branch")
-		   (not (match_test "pa_following_call (insn)")))
+(define_delay (eq_attr "type" "uncond_branch")
   [(eq_attr "in_branch_delay" "true") (nil) (nil)])
 
 ;; Memory. Disregarding Cache misses, the Mustang memory times are:
@@ -706,59 +699,229 @@
 ;; doubleword loads and stores are not guaranteed to be atomic
 ;; when referencing the I/O address space.
 
-;; Implement atomic DImode load using 64-bit floating point load and copy.
+;; The kernel cmpxchg operation on linux is not atomic with respect to
+;; memory stores on SMP machines, so we must do stores using a cmpxchg
+;; operation.
+
+;; Implement atomic QImode store using exchange.
+
+(define_expand "atomic_storeqi"
+  [(match_operand:QI 0 "memory_operand")                ;; memory
+   (match_operand:QI 1 "register_operand")              ;; val out
+   (match_operand:SI 2 "const_int_operand")]            ;; model
+  ""
+{
+  if (TARGET_SYNC_LIBCALL)
+    {
+      rtx mem = operands[0];
+      rtx val = operands[1];
+      if (pa_maybe_emit_compare_and_swap_exchange_loop (NULL_RTX, mem, val))
+	DONE;
+    }
+  FAIL;
+})
+
+;; Implement atomic HImode stores using exchange.
+
+(define_expand "atomic_storehi"
+  [(match_operand:HI 0 "memory_operand")                ;; memory
+   (match_operand:HI 1 "register_operand")              ;; val out
+   (match_operand:SI 2 "const_int_operand")]            ;; model
+  ""
+{
+  if (TARGET_SYNC_LIBCALL)
+    {
+      rtx mem = operands[0];
+      rtx val = operands[1];
+      if (pa_maybe_emit_compare_and_swap_exchange_loop (NULL_RTX, mem, val))
+	DONE;
+    }
+  FAIL;
+})
+
+;; Implement atomic SImode store using exchange.
+
+(define_expand "atomic_storesi"
+  [(match_operand:SI 0 "memory_operand")                ;; memory
+   (match_operand:SI 1 "register_operand")              ;; val out
+   (match_operand:SI 2 "const_int_operand")]            ;; model
+  ""
+{
+  if (TARGET_SYNC_LIBCALL)
+    {
+      rtx mem = operands[0];
+      rtx val = operands[1];
+      if (pa_maybe_emit_compare_and_swap_exchange_loop (NULL_RTX, mem, val))
+	DONE;
+    }
+  FAIL;
+})
+
+;; Implement atomic SFmode store using exchange.
+
+(define_expand "atomic_storesf"
+  [(match_operand:SF 0 "memory_operand")                ;; memory
+   (match_operand:SF 1 "register_operand")              ;; val out
+   (match_operand:SI 2 "const_int_operand")]            ;; model
+  ""
+{
+  if (TARGET_SYNC_LIBCALL)
+    {
+      rtx mem = operands[0];
+      rtx val = operands[1];
+      if (pa_maybe_emit_compare_and_swap_exchange_loop (NULL_RTX, mem, val))
+	DONE;
+    }
+  FAIL;
+})
+
+;; Implement atomic DImode load using 64-bit floating point load.
 
 (define_expand "atomic_loaddi"
   [(match_operand:DI 0 "register_operand")              ;; val out
    (match_operand:DI 1 "memory_operand")                ;; memory
    (match_operand:SI 2 "const_int_operand")]            ;; model
-  "!TARGET_64BIT && !TARGET_SOFT_FLOAT"
+  ""
 {
-  enum memmodel model = (enum memmodel) INTVAL (operands[2]);
+  enum memmodel model;
+
+  if (TARGET_64BIT || TARGET_SOFT_FLOAT)
+    FAIL;
+
+  model = memmodel_from_int (INTVAL (operands[2]));
   operands[1] = force_reg (SImode, XEXP (operands[1], 0));
-  operands[2] = gen_reg_rtx (DImode);
   expand_mem_thread_fence (model);
-  emit_insn (gen_atomic_loaddi_1 (operands[0], operands[1], operands[2]));
-  if ((model & MEMMODEL_MASK) == MEMMODEL_SEQ_CST)
+  emit_insn (gen_atomic_loaddi_1 (operands[0], operands[1]));
+  if (is_mm_seq_cst (model))
     expand_mem_thread_fence (model);
   DONE;
 })
 
 (define_insn "atomic_loaddi_1"
-  [(set (match_operand:DI 0 "register_operand" "=r")
-        (mem:DI (match_operand:SI 1 "register_operand" "r")))
-   (clobber (match_operand:DI 2 "register_operand" "=&f"))]
+  [(set (match_operand:DI 0 "register_operand" "=f,r")
+        (mem:DI (match_operand:SI 1 "register_operand" "r,r")))
+   (clobber (match_scratch:DI 2 "=X,f"))]
   "!TARGET_64BIT && !TARGET_SOFT_FLOAT"
-  "{fldds|fldd} 0(%1),%2\;{fstds|fstd} %2,-16(%%sp)\;{ldws|ldw} -16(%%sp),%0\;{ldws|ldw} -12(%%sp),%R0"
-  [(set_attr "type" "move")
-   (set_attr "length" "16")])
+  "@
+   {fldds|fldd} 0(%1),%0
+   {fldds|fldd} 0(%1),%2\n\t{fstds|fstd} %2,-16(%%sp)\n\t{ldws|ldw} -16(%%sp),%0\n\t{ldws|ldw} -12(%%sp),%R0"
+  [(set_attr "type" "move,move")
+   (set_attr "length" "4,16")])
 
-;; Implement atomic DImode store using copy and 64-bit floating point store.
+;; Implement atomic DImode store.
 
 (define_expand "atomic_storedi"
   [(match_operand:DI 0 "memory_operand")                ;; memory
    (match_operand:DI 1 "register_operand")              ;; val out
    (match_operand:SI 2 "const_int_operand")]            ;; model
-  "!TARGET_64BIT && !TARGET_SOFT_FLOAT"
+  ""
 {
-  enum memmodel model = (enum memmodel) INTVAL (operands[2]);
+  enum memmodel model;
+
+  if (TARGET_SYNC_LIBCALL)
+    {
+      rtx mem = operands[0];
+      rtx val = operands[1];
+      if (pa_maybe_emit_compare_and_swap_exchange_loop (NULL_RTX, mem, val))
+	DONE;
+    }
+
+  if (TARGET_64BIT || TARGET_SOFT_FLOAT)
+    FAIL;
+
+  model = memmodel_from_int (INTVAL (operands[2]));
   operands[0] = force_reg (SImode, XEXP (operands[0], 0));
-  operands[2] = gen_reg_rtx (DImode);
   expand_mem_thread_fence (model);
-  emit_insn (gen_atomic_storedi_1 (operands[0], operands[1], operands[2]));
-  if ((model & MEMMODEL_MASK) == MEMMODEL_SEQ_CST)
+  emit_insn (gen_atomic_storedi_1 (operands[0], operands[1]));
+  if (is_mm_seq_cst (model))
     expand_mem_thread_fence (model);
   DONE;
 })
 
 (define_insn "atomic_storedi_1"
-  [(set (mem:DI (match_operand:SI 0 "register_operand" "r"))
-        (match_operand:DI 1 "register_operand" "r"))
-   (clobber (match_operand:DI 2 "register_operand" "=&f"))]
+  [(set (mem:DI (match_operand:SI 0 "register_operand" "r,r"))
+        (match_operand:DI 1 "register_operand" "f,r"))
+   (clobber (match_scratch:DI 2 "=X,f"))]
+  "!TARGET_64BIT && !TARGET_SOFT_FLOAT && !TARGET_SYNC_LIBCALL"
+  "@
+   {fstds|fstd} %1,0(%0)
+   {stws|stw} %1,-16(%%sp)\n\t{stws|stw} %R1,-12(%%sp)\n\t{fldds|fldd} -16(%%sp),%2\n\t{fstds|fstd} %2,0(%0)"
+  [(set_attr "type" "move,move")
+   (set_attr "length" "4,16")])
+
+;; Implement atomic DFmode load using 64-bit floating point load.
+
+(define_expand "atomic_loaddf"
+  [(match_operand:DF 0 "register_operand")              ;; val out
+   (match_operand:DF 1 "memory_operand")                ;; memory
+   (match_operand:SI 2 "const_int_operand")]            ;; model
+  ""
+{
+  enum memmodel model;
+
+  if (TARGET_64BIT || TARGET_SOFT_FLOAT)
+    FAIL;
+
+  model = memmodel_from_int (INTVAL (operands[2]));
+  operands[1] = force_reg (SImode, XEXP (operands[1], 0));
+  expand_mem_thread_fence (model);
+  emit_insn (gen_atomic_loaddf_1 (operands[0], operands[1]));
+  if (is_mm_seq_cst (model))
+    expand_mem_thread_fence (model);
+  DONE;
+})
+
+(define_insn "atomic_loaddf_1"
+  [(set (match_operand:DF 0 "register_operand" "=f,r")
+        (mem:DF (match_operand:SI 1 "register_operand" "r,r")))
+   (clobber (match_scratch:DF 2 "=X,f"))]
   "!TARGET_64BIT && !TARGET_SOFT_FLOAT"
-  "{stws|stw} %1,-16(%%sp)\;{stws|stw} %R1,-12(%%sp)\;{fldds|fldd} -16(%%sp),%2\;{fstds|fstd} %2,0(%0)"
-  [(set_attr "type" "move")
-   (set_attr "length" "16")])
+  "@
+   {fldds|fldd} 0(%1),%0
+   {fldds|fldd} 0(%1),%2\n\t{fstds|fstd} %2,-16(%%sp)\n\t{ldws|ldw} -16(%%sp),%0\n\t{ldws|ldw} -12(%%sp),%R0"
+  [(set_attr "type" "move,move")
+   (set_attr "length" "4,16")])
+
+;; Implement atomic DFmode store using 64-bit floating point store.
+
+(define_expand "atomic_storedf"
+  [(match_operand:DF 0 "memory_operand")                ;; memory
+   (match_operand:DF 1 "register_operand")              ;; val out
+   (match_operand:SI 2 "const_int_operand")]            ;; model
+  ""
+{
+  enum memmodel model;
+
+  if (TARGET_SYNC_LIBCALL)
+    {
+      rtx mem = operands[0];
+      rtx val = operands[1];
+      if (pa_maybe_emit_compare_and_swap_exchange_loop (NULL_RTX, mem, val))
+	DONE;
+    }
+
+  if (TARGET_64BIT || TARGET_SOFT_FLOAT)
+    FAIL;
+
+  model = memmodel_from_int (INTVAL (operands[2]));
+  operands[0] = force_reg (SImode, XEXP (operands[0], 0));
+  expand_mem_thread_fence (model);
+  emit_insn (gen_atomic_storedf_1 (operands[0], operands[1]));
+  if (is_mm_seq_cst (model))
+    expand_mem_thread_fence (model);
+  DONE;
+})
+
+(define_insn "atomic_storedf_1"
+  [(set (mem:DF (match_operand:SI 0 "register_operand" "r,r"))
+        (match_operand:DF 1 "register_operand" "f,r"))
+   (clobber (match_scratch:DF 2 "=X,f"))]
+  "!TARGET_64BIT && !TARGET_SOFT_FLOAT"
+  "@
+   {fstds|fstd} %1,0(%0)
+   {stws|stw} %1,-16(%%sp)\n\t{stws|stw} %R1,-12(%%sp)\n\t{fldds|fldd} -16(%%sp),%2\n\t{fstds|fstd} %2,0(%0)"
+  [(set_attr "type" "move,move")
+   (set_attr "length" "4,16")])
 
 ;; Compare instructions.
 ;; This controls RTL generation and register allocation.
@@ -6916,13 +7079,7 @@
   [(set_attr "type" "uncond_branch")
    (set_attr "pa_combine_type" "uncond_branch")
    (set (attr "length")
-    (cond [(match_test "pa_jump_in_call_delay (insn)")
-	   (if_then_else (lt (abs (minus (match_dup 0)
-					 (plus (pc) (const_int 8))))
-			     (const_int MAX_12BIT_OFFSET))
-	   (const_int 4)
-	   (const_int 8))
-	   (lt (abs (minus (match_dup 0) (plus (pc) (const_int 8))))
+    (cond [(lt (abs (minus (match_dup 0) (plus (pc) (const_int 8))))
 	       (const_int MAX_17BIT_OFFSET))
 	   (const_int 4)
 	   (match_test "TARGET_PORTABLE_RUNTIME")
@@ -6933,8 +7090,8 @@
 
 ;;; Hope this is only within a function...
 (define_insn "indirect_jump"
-  [(set (pc) (match_operand 0 "register_operand" "r"))]
-  "GET_MODE (operands[0]) == word_mode"
+  [(set (pc) (match_operand 0 "pmode_register_operand" "r"))]
+  ""
   "bv%* %%r0(%0)"
   [(set_attr "type" "branch")
    (set_attr "length" "4")])
@@ -7529,7 +7686,6 @@ add,l %2,%3,%3\;bv,n %%r0(%3)"
 (define_insn "call_reg_64bit"
   [(call (mem:SI (match_operand:DI 0 "register_operand" "r"))
 	 (match_operand 1 "" "i"))
-   (clobber (reg:DI 1))
    (clobber (reg:DI 2))
    (clobber (match_operand 2))
    (use (reg:DI 27))
@@ -7550,7 +7706,6 @@ add,l %2,%3,%3\;bv,n %%r0(%3)"
 (define_split
   [(parallel [(call (mem:SI (match_operand 0 "register_operand" ""))
 		    (match_operand 1 "" ""))
-	      (clobber (reg:DI 1))
 	      (clobber (reg:DI 2))
 	      (clobber (match_operand 2))
 	      (use (reg:DI 27))
@@ -7561,7 +7716,6 @@ add,l %2,%3,%3\;bv,n %%r0(%3)"
   [(set (match_dup 2) (reg:DI 27))
    (parallel [(call (mem:SI (match_dup 0))
 		    (match_dup 1))
-	      (clobber (reg:DI 1))
 	      (clobber (reg:DI 2))
 	      (use (reg:DI 27))
 	      (use (reg:DI 29))
@@ -7571,7 +7725,6 @@ add,l %2,%3,%3\;bv,n %%r0(%3)"
 (define_split
   [(parallel [(call (mem:SI (match_operand 0 "register_operand" ""))
 		    (match_operand 1 "" ""))
-	      (clobber (reg:DI 1))
 	      (clobber (reg:DI 2))
 	      (clobber (match_operand 2))
 	      (use (reg:DI 27))
@@ -7581,7 +7734,6 @@ add,l %2,%3,%3\;bv,n %%r0(%3)"
   [(set (match_dup 2) (reg:DI 27))
    (parallel [(call (mem:SI (match_dup 0))
 		    (match_dup 1))
-	      (clobber (reg:DI 1))
 	      (clobber (reg:DI 2))
 	      (use (reg:DI 27))
 	      (use (reg:DI 29))
@@ -7592,7 +7744,6 @@ add,l %2,%3,%3\;bv,n %%r0(%3)"
 (define_insn "*call_reg_64bit_post_reload"
   [(call (mem:SI (match_operand:DI 0 "register_operand" "r"))
 	 (match_operand 1 "" "i"))
-   (clobber (reg:DI 1))
    (clobber (reg:DI 2))
    (use (reg:DI 27))
    (use (reg:DI 29))

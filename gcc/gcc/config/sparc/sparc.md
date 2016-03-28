@@ -1,5 +1,5 @@
 ;; Machine description for SPARC chip for GCC
-;;  Copyright (C) 1987-2014 Free Software Foundation, Inc.
+;;  Copyright (C) 1987-2015 Free Software Foundation, Inc.
 ;;  Contributed by Michael Tiemann (tiemann@cygnus.com)
 ;;  64-bit SPARC-V9 support by Michael Tiemann, Jim Wilson, and Doug Evans,
 ;;  at Cygnus Support.
@@ -1892,7 +1892,7 @@
   emit_insn (gen_movsi (gen_lowpart (SImode, operands[0]),
 			operands[1]));
 #else
-  unsigned int low, high;
+  HOST_WIDE_INT low, high;
 
   low = trunc_int_for_mode (INTVAL (operands[1]), SImode);
   high = trunc_int_for_mode (INTVAL (operands[1]) >> 32, SImode);
@@ -2371,14 +2371,14 @@
 #if HOST_BITS_PER_WIDE_INT == 32
       gcc_unreachable ();
 #else
-      enum machine_mode mode = GET_MODE (operands[1]);
+      machine_mode mode = GET_MODE (operands[1]);
       rtx tem = simplify_subreg (DImode, operands[1], mode, 0);
       emit_insn (gen_movdi (operands[0], tem));
 #endif
     }
   else
     {
-      enum machine_mode mode = GET_MODE (operands[1]);
+      machine_mode mode = GET_MODE (operands[1]);
       rtx hi = simplify_subreg (SImode, operands[1], mode, 0);
       rtx lo = simplify_subreg (SImode, operands[1], mode, 4);
 
@@ -4810,7 +4810,7 @@
   [(set (match_dup 3) (match_dup 4))
    (set (match_dup 0) (ior:SI (not:SI (match_dup 3)) (match_dup 1)))]
 {
-  operands[4] = GEN_INT (~INTVAL (operands[2]));
+  operands[4] = gen_int_mode (~INTVAL (operands[2]), SImode);
 })
 
 (define_insn_and_split "*or_not_di_sp32"
@@ -4887,7 +4887,7 @@
   [(set (match_dup 3) (match_dup 4))
    (set (match_dup 0) (not:SI (xor:SI (match_dup 3) (match_dup 1))))]
 {
-  operands[4] = GEN_INT (~INTVAL (operands[2]));
+  operands[4] = gen_int_mode (~INTVAL (operands[2]), SImode);
 })
 
 (define_split
@@ -4899,7 +4899,7 @@
   [(set (match_dup 3) (match_dup 4))
    (set (match_dup 0) (xor:SI (match_dup 3) (match_dup 1)))]
 {
-  operands[4] = GEN_INT (~INTVAL (operands[2]));
+  operands[4] = gen_int_mode (~INTVAL (operands[2]), SImode);
 })
 
 ;; Split DImode logical operations requiring two instructions.
@@ -6398,7 +6398,6 @@
   ""
 {
   rtx valreg1 = gen_rtx_REG (DImode, 8);
-  rtx valreg2 = gen_rtx_REG (TARGET_ARCH64 ? TFmode : DFmode, 32);
   rtx result = operands[1];
 
   /* Pass constm1 to indicate that it may expect a structure value, but
@@ -6407,8 +6406,12 @@
 
   /* Save the function value registers.  */
   emit_move_insn (adjust_address (result, DImode, 0), valreg1);
-  emit_move_insn (adjust_address (result, TARGET_ARCH64 ? TFmode : DFmode, 8),
-				  valreg2);
+  if (TARGET_FPU)
+    {
+      rtx valreg2 = gen_rtx_REG (TARGET_ARCH64 ? TFmode : DFmode, 32);
+      emit_move_insn (adjust_address (result, TARGET_ARCH64 ? TFmode : DFmode, 8),
+		      valreg2);
+    }
 
   /* The optimizer does not know that the call sets the function value
      registers we stored in the result block.  We avoid problems by
@@ -6620,7 +6623,6 @@
   ""
 {
   rtx valreg1 = gen_rtx_REG (DImode, 24);
-  rtx valreg2 = gen_rtx_REG (TARGET_ARCH64 ? TFmode : DFmode, 32);
   rtx result = operands[0];
 
   if (! TARGET_ARCH64)
@@ -6637,14 +6639,18 @@
       emit_insn (gen_update_return (rtnreg, value));
     }
 
-  /* Reload the function value registers.  */
+  /* Reload the function value registers.
+     Put USE insns before the return.  */
   emit_move_insn (valreg1, adjust_address (result, DImode, 0));
-  emit_move_insn (valreg2,
-		  adjust_address (result, TARGET_ARCH64 ? TFmode : DFmode, 8));
-
-  /* Put USE insns before the return.  */
   emit_use (valreg1);
-  emit_use (valreg2);
+
+  if (TARGET_FPU)
+    {
+      rtx valreg2 = gen_rtx_REG (TARGET_ARCH64 ? TFmode : DFmode, 32);
+      emit_move_insn (valreg2,
+		      adjust_address (result, TARGET_ARCH64 ? TFmode : DFmode, 8));
+      emit_use (valreg2);
+    }
 
   /* Construct the return.  */
   expand_naked_return ();
