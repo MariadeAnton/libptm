@@ -26,6 +26,7 @@
    <http://www.gnu.org/licenses/>.  */
 
 #include "libitm_i.h"
+#include <stdio.h>
 
 using namespace GTM;
 
@@ -39,6 +40,7 @@ struct serial_mg : public method_group
 
 static serial_mg o_serial_mg;
 
+static size_t written_bytes(0);
 
 class footprint_dispatch : public abi_dispatch
 {
@@ -64,6 +66,7 @@ class footprint_dispatch : public abi_dispatch
   template <typename V> static void store(V* addr, const V value,
       ls_modifier mod)
   {
+    written_bytes += sizeof(V);
     *addr = value;
   }
 
@@ -71,6 +74,7 @@ class footprint_dispatch : public abi_dispatch
   static void memtransfer_static(void *dst, const void* src, size_t size,
       bool may_overlap, ls_modifier dst_mod, ls_modifier src_mod)
   {
+    written_bytes += size;
     if (!may_overlap)
       ::memcpy(dst, src, size);
     else
@@ -79,6 +83,7 @@ class footprint_dispatch : public abi_dispatch
 
   static void memset_static(void *dst, int c, size_t size, ls_modifier mod)
   {
+    written_bytes += size;
     ::memset(dst, c, size);
   }
 
@@ -86,7 +91,13 @@ class footprint_dispatch : public abi_dispatch
   CREATE_DISPATCH_METHODS_MEM()
 
   virtual gtm_restart_reason begin_or_restart() { return NO_RESTART; }
-  virtual bool trycommit(gtm_word& priv_time) { return true; }
+
+  virtual bool trycommit(gtm_word& priv_time)
+  {
+    fprintf(stdout, "%ld\n", written_bytes);
+    return true;
+  }
+
   virtual void rollback(gtm_transaction_cp *cp) { abort(); }
 };
 
