@@ -18,7 +18,4 @@ before_script:
  - cd gcc
 script:
  - ./configure --enable-languages=c,c++ --disable-multilib --enable-silent-rules --silent
- - make V=0 -j2 --no-print-directory
-branches:
-  only:
-   - master
+ - make V=1 -j2
