@@ -18,4 +18,4 @@ before_script:
  - cd gcc
 script:
  - ./configure --enable-languages=c,c++ --disable-multilib --enable-silent-rules --silent
- - make V=1 -j2
+ - make >/dev/null || make
