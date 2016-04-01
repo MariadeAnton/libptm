@@ -18,4 +18,4 @@ before_script:
  - cd gcc
 script:
  - ./configure --enable-languages=c,c++ --disable-multilib --enable-silent-rules --silent
- - travis_wait make >/dev/null || make
+ - make >/dev/null || make
